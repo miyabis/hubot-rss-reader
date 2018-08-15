@@ -33,7 +33,8 @@
     "iconv": "*",
     "irc-colors": "^1.1.1",
     "lodash": "*",
-    "request": "*"
+    "request": "*",
+    "url": "*"
   },
   "devDependencies": {
     "coffee-errors": "*",

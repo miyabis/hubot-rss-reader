@@ -19,6 +19,7 @@ debug      = require('debug')('hubot-rss-reader')
 Promise    = require 'bluebird'
 RSSChecker = require path.join __dirname, '../libs/rss-checker'
 FindRSS    = Promise.promisify require 'find-rss'
+nodeUrl    = require 'url'
 
 ## config
 package_json = require path.join __dirname, '../package.json'
@@ -30,6 +31,7 @@ process.env.HUBOT_RSS_PRINTIMAGE   ||= "true"
 process.env.HUBOT_RSS_PRINTERROR   ||= "true"
 process.env.HUBOT_RSS_IRCCOLORS    ||= "false"
 process.env.HUBOT_RSS_LIMIT_ON_ADD ||= 5
+process.env.HUBOT_RSS_ATTACHMENT_COLOR ||= "#3AA3E3"
 
 module.exports = (robot) ->
 
@@ -44,8 +46,56 @@ module.exports = (robot) ->
       robot.logger.error "#{debug.namespace}: #{msg}"
 
   send_queue = []
-  send = (envelope, body) ->
-    send_queue.push {envelope: envelope, body: body}
+  send = (envelope, entry) ->
+    checker.getIcon entry.feed.sitelink
+    .then (icons) ->
+      entry.feed.favicon = icons["shortcuticon"]?[0] ? icons["icon"]?[0] ? icons["og:image"]?[0] ? null
+      _send envelope, entry
+    .catch (err) ->
+      _send envelope, entry
+
+  _send = (envelope, entry) ->
+    envelope.changeUsername = entry.feed.title
+    envelope.changeIcon = entry.feed.favicon
+
+    unless envelope.changeIcon?
+      url = nodeUrl.parse entry.feed.sitelink
+      url = url.protocol + "//" + url.host + "/favicon.ico"
+      envelope.changeIcon = url
+
+    if entry.text?
+      image_url = entry.summary.image_url
+    else
+      thumb_url = entry.summary.image_url
+
+    update =
+      title: "Update"
+      value: entry.pubDate.toLocaleDateString() + " " + entry.pubDate.toLocaleTimeString()
+      short: true
+
+    if entry.category.length isnt 0
+      category = 
+        title: "Category"
+        value: entry.category
+        short: true
+
+    data =
+      attachments: [
+          {
+            fallback: entry.title
+            color: process.env.HUBOT_RSS_ATTACHMENT_COLOR,
+            title: entry.title,
+            title_link: entry.url,
+            text: entry.summary.text,
+            thumb_url: thumb_url,
+            image_url: image_url,
+            ts: entry.pubDate / 1000 | 0,
+            fields: [update, category]
+          }
+        ]
+
+    logger.info JSON.stringify data
+    send_queue.push {envelope: envelope, body: data}
 
   getRoom = (msg) ->
     switch robot.adapterName
@@ -59,6 +109,7 @@ module.exports = (robot) ->
     return if send_queue.length < 1
     msg = send_queue.shift()
     try
+      robot.adapter.url = robot.adapter.incomeUrl
       robot.send msg.envelope, msg.body
     catch err
       logger.error "Error on sending to room: \"#{room}\""
@@ -74,10 +125,12 @@ module.exports = (robot) ->
       checker.check opts
       .then ->
         logger.info "wait #{process.env.HUBOT_RSS_INTERVAL} seconds"
+        robot.adapter.url = robot.adapter.incomeUrl
         setTimeout run, 1000 * process.env.HUBOT_RSS_INTERVAL
       , (err) ->
         logger.error err
         logger.info "wait #{process.env.HUBOT_RSS_INTERVAL} seconds"
+        robot.adapter.url = robot.adapter.incomeUrl
         setTimeout run, 1000 * process.env.HUBOT_RSS_INTERVAL
 
     run()
@@ -91,7 +144,7 @@ module.exports = (robot) ->
       if room isnt entry.args.room and
          _.includes feeds, entry.feed.url
         logger.info "#{entry.title} #{entry.url} => #{room}"
-        send {room: room}, entry.toString()
+        send {room: room}, entry
 
   checker.on 'error', (err) ->
     logger.error err
@@ -102,7 +155,12 @@ module.exports = (robot) ->
     last_state_is_error[err.feed.url] = true
     for room, feeds of checker.getAllFeeds()
       if _.includes feeds, err.feed.url
-        send {room: room}, "[ERROR] #{err.feed.url} - #{err.error.message or err.error}"
+        summary =
+          text: "[ERROR] #{err.feed.url} - #{err.error.message or err.error}"
+        entry =
+          feed: feed
+          summary: summary
+        send {room: room}, entry
 
   robot.respond /rss\s+(add|register)\s+(https?:\/\/[^\s]+)$/im, (msg) ->
     url = msg.match[2].trim()
@@ -123,10 +181,9 @@ module.exports = (robot) ->
         else
           process.env.HUBOT_RSS_LIMIT_ON_ADD - 0
       for entry in entries.splice 0, entry_limit
-        send {room: room}, entry.toString()
+        send {room: room}, entry
       if entries.length > 0
-        send {room: room},
-        "#{process.env.HUBOT_RSS_HEADER} #{entries.length} entries has been omitted"
+        msg.send "#{process.env.HUBOT_RSS_HEADER} #{entries.length} entries has been omitted"
     , (err) ->
       msg.send "[ERROR] #{err}"
       return if err.message isnt 'Not a feed'
@@ -144,8 +201,8 @@ module.exports = (robot) ->
       logger.error err.stack
 
 
-  robot.respond /rss\s+delete\s+(https?:\/\/[^\s]+)$/im, (msg) ->
-    url = msg.match[1].trim()
+  robot.respond /rss\s+(del|rm)\s+(https?:\/\/[^\s]+)$/im, (msg) ->
+    url = msg.match[2].trim()
     logger.info "delete #{url}"
     checker.deleteFeed(getRoom(msg), url)
     .then (res) ->
@@ -154,8 +211,8 @@ module.exports = (robot) ->
       msg.send err
       logger.error err.stack
 
-  robot.respond /rss\s+delete\s+#([^\s]+)$/im, (msg) ->
-    room = msg.match[1].trim()
+  robot.respond /rss\s+(del|rm)\s+#([^\s]+)$/im, (msg) ->
+    room = msg.match[2].trim()
     logger.info "delete ##{room}"
     checker.deleteRoom room
     .then (res) ->
@@ -171,6 +228,36 @@ module.exports = (robot) ->
     else
       msg.send feeds.join "\n"
 
-  robot.respond /rss dump$/i, (msg) ->
+  robot.respond /rss\s+dump$/i, (msg) ->
     feeds = checker.getAllFeeds()
-    msg.send JSON.stringify feeds, null, 2
+    msg.send "JSON Dump\n" + JSON.stringify(feeds, null, 2)
+
+  robot.respond /rss\s+help$/i, (msg) ->
+    msg.send "**RSS Add**\n
+    ```\n
+    #{robot.name} rss add [url]\n
+    #{robot.name} rss register [url]
+    ```\n
+    **RSS Delete**\n
+    ```\n
+    #{robot.name} rss del [url]\n
+    #{robot.name} rss rm [url]
+    ```\n
+    **Room Delete**\n
+    ```\n
+    #{robot.name} rss del #[room]\n
+    #{robot.name} rss rm #[room]
+    ```\n
+    **RSS List**\n
+    ```\n
+    #{robot.name} rss list
+    ```\n
+    **JSON dump (all list)**\n
+    ```\n
+    #{robot.name} rss dump
+    ```\n
+    **Help**\n
+    ```\n
+    #{robot.name} rss help
+    ```\n"
+

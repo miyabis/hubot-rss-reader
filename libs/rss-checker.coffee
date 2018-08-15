@@ -17,6 +17,7 @@ debug      = require('debug')('hubot-rss-reader:rss-checker')
 cheerio    = require 'cheerio'
 Promise    = require 'bluebird'
 IrcColor   = require 'irc-colors'
+nodeUrl    = require 'url'
 
 charsetConvertStream = require './charset-convert-stream'
 Entries = require './entries'
@@ -29,16 +30,25 @@ module.exports = class RSSChecker extends events.EventEmitter
     summary = do (html) ->
       try
         $ = cheerio.load html
+        data =
+          image_url: null
+          text: $.root().text()
         if process.env.HUBOT_RSS_PRINTIMAGE is 'true'
           if img = $('img').attr('src')
-            return img + '\n' + $.root().text()
-        return $.root().text()
-      catch
-        return html
-    lines = summary.split /[\r\n]/
+            data.image_url = img
+        return data
+      catch err
+        debug err
+        return {
+            image_url: null,
+            text: html
+          }
+
+    lines = summary.text.split /[\r\n]/
     lines = lines.map (line) -> if /^\s+$/.test line then '' else line
-    summary = lines.join '\n'
-    return summary.replace(/\n\n\n+/g, '\n\n')
+    summary.text = lines.join '\n'
+    summary.text = summary.text.replace(/\n\n\n+/g, '\n\n')
+    return summary
 
   fetch: (args) ->
     new Promise (resolve, reject) =>
@@ -74,25 +84,37 @@ module.exports = class RSSChecker extends events.EventEmitter
       feedparser.on 'error', (err) ->
         reject err
 
+      feedMeta = []
+      feedparser.on 'meta', (meta) ->
+        feedMeta = meta
+
       entries = []
       feedparser.on 'data', (chunk) =>
         entry =
           url: chunk.link
           title: entities.decode(chunk.title or '')
-          summary: cleanup_summary entities.decode(chunk.summary or chunk.description or '')
+          pubDate: (chunk.date or chunk.pubdate or null)
+          getSummary: ->
+            data = cleanup_summary entities.decode(chunk.summary or chunk.description or '')
+            if process.env.HUBOT_RSS_IRCCOLORS is "true"
+              s = "#{IrcColor.pink(process.env.HUBOT_RSS_HEADER)} #{@title} #{IrcColor.purple('- ['+@feed.title+']')}\n#{IrcColor.lightgrey.underline(@url)}"
+            if process.env.HUBOT_RSS_PRINTSUMMARY is "true" and data?.text?.length > 0
+              if process.env.HUBOT_RSS_IRCCOLORS is "true"
+                s += "\n\n#{data.text}"
+              else
+                s = "#{data.text}"
+            data.text = s
+            return data
+          summary: null
+          category: chunk.categories.join ', '
           feed:
             url: args.url
             title: entities.decode(feedparser.meta.title or '')
-          toString: ->
-            if process.env.HUBOT_RSS_IRCCOLORS is "true"
-              s = "#{IrcColor.pink(process.env.HUBOT_RSS_HEADER)} #{@title} #{IrcColor.purple('- ['+@feed.title+']')}\n#{IrcColor.lightgrey.underline(@url)}"
-            else
-              s = "#{process.env.HUBOT_RSS_HEADER} #{@title} - [#{@feed.title}]\n#{@url}"
-
-            if process.env.HUBOT_RSS_PRINTSUMMARY is "true" and @summary?.length > 0
-              s += "\n#{@summary}"
-            return s
+            sitelink: feedparser.meta.link
+            favicon: feedparser.meta.favicon
           args: args
+
+        entry.summary = entry.getSummary()
 
         debug entry
         entries.push entry
@@ -135,6 +157,31 @@ module.exports = class RSSChecker extends events.EventEmitter
 
   getFeeds: (room) ->
     @getAllFeeds()?[room] or []
+
+  getIcon: (url)->
+    new Promise (resolve, reject) ->
+      icons = {}
+      request url, (error, response, body) ->
+        if error 
+          return reject err
+        regs  = 
+          "icon": /<link .*rel=\"icon\".*?>/g
+          "shortcuticon": /<link .*rel=\"shortcut icon\".*?>/g
+          "og:image": /<meta .*property="og:image".*?>/g
+        for key, reg of regs
+          links = []
+          matches = body.match reg
+          if not matches
+            matches = []
+          for link in matches
+            hrefs = link.match /(href|content)=\"(.*?)\"/
+            if hrefs
+              href = hrefs[2]
+              if not href.match /(http:|https:)/
+                href = nodeUrl.resolve url, href
+              links.push href
+          icons[key] = links
+        resolve icons
 
   setFeeds: (room, urls) ->
     return unless urls instanceof Array
