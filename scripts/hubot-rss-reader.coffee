@@ -32,6 +32,7 @@ process.env.HUBOT_RSS_PRINTERROR   ||= "true"
 process.env.HUBOT_RSS_IRCCOLORS    ||= "false"
 process.env.HUBOT_RSS_LIMIT_ON_ADD ||= 5
 process.env.HUBOT_RSS_ATTACHMENT_COLOR ||= "#3AA3E3"
+process.env.HUBOT_RSS_PRINTFIELDS      ||= "false"
 
 module.exports = (robot) ->
 
@@ -62,7 +63,7 @@ module.exports = (robot) ->
       url = nodeUrl.parse entry.feed.sitelink
       url = url.protocol + "//" + url.host + "/favicon.ico"
       envelope.changeIcon = url
-
+    
     if entry.text?
       image_url = entry.summary.image_url
     else
@@ -79,6 +80,9 @@ module.exports = (robot) ->
         value: entry.category
         short: true
 
+    if process.env.HUBOT_RSS_PRINTFIELDS is "true"
+      fields = [update, category]
+
     data =
       attachments: [
           {
@@ -90,7 +94,7 @@ module.exports = (robot) ->
             thumb_url: thumb_url,
             image_url: image_url,
             ts: entry.pubDate / 1000 | 0,
-            fields: [update, category]
+            fields: fields
           }
         ]
 
@@ -163,7 +167,7 @@ module.exports = (robot) ->
         send {room: room}, entry
 
   robot.respond /rss\s+(add|register)\s+(https?:\/\/[^\s]+)$/im, (msg) ->
-    url = msg.match[2].trim()
+    url = msg.match[2].trim() 
     last_state_is_error[url] = false
     logger.info "add #{url}"
     room = getRoom msg
