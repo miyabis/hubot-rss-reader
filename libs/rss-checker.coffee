@@ -166,7 +166,7 @@ module.exports = class RSSChecker extends events.EventEmitter
           return reject err
         regs  = 
           "icon": /<link .*rel=[\"\']icon[\"\'].*?>/g
-          "shortcuticon": /<link .*rel=[\"\']shortcut icon[\"\'].*?>/g
+          "shortcuticon": /(?:<link rel=[\"\']shortcut icon[\"\'].*?>|<link href=.* rel=[\"\']shortcut icon[\"\'].*?>)/g
           "og:image": /<meta property=[\"\']og:image[\"\'].*?>/g
         for key, reg of regs
           links = []
@@ -174,9 +174,9 @@ module.exports = class RSSChecker extends events.EventEmitter
           if not matches
             matches = []
           for link in matches
-            hrefs = link.match /(href|content)=[\"\']?([\-_\.\!\~\*\'\(\)a-zA-Z0-9\;\/\?\:@&=\+\$\,\%\#]+(jpg|jpeg|gif|png|bmp|icon|ico)?)[\"\']?/
+            hrefs = link.match /(?:href|content)=[\"\']?([\-_\.\!\~\*\'\(\)a-zA-Z0-9\;\/\?\:@&=\+\$\,\%\#]+(?:jpg|jpeg|gif|png|bmp|icon|ico)?)[\"\']?/
             if hrefs
-              href = hrefs[2]
+              href = hrefs[1]
               if not href.match /(http:|https:)/
                 href = nodeUrl.resolve url, href
               links.push href
